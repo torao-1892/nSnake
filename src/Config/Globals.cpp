@@ -1,15 +1,20 @@
 #include <Config/Globals.hpp>
-#include <Config/INI.hpp>
-#include <Misc/Utils.hpp>
-#include <Flow/InputManager.hpp>
+#include <Engine/EngineGlobals.hpp>
+#include <Engine/Helpers/INI.hpp>
+#include <Engine/Helpers/File.hpp>
+#include <Engine/Helpers/String.hpp>
+#include <Engine/InputManager.hpp>
+#include <Entities/BoardParser.hpp>
+#include <Entities/ScoreFile.hpp>
 
 #include <ncurses.h>
 #include <iostream>
+#include <fstream>
 
 // VERSION is formatted like "0.0.1" - i'm skipping the dots
-int Globals::version[3] = { VERSION[0] - '0',
-                            VERSION[2] - '0',
-                            VERSION[4] - '0'};
+char Globals::version[3] = { VERSION[0],
+                             VERSION[2],
+                             VERSION[4] };
 
 //  __    ___   _      ____  _   __
 // / /`  / / \ | |\ | | |_  | | / /`_
@@ -20,17 +25,16 @@ std::string Globals::Config::directory  = "";
 std::string Globals::Config::file       = "";
 std::string Globals::Config::scoresFile = "";
 
-bool Globals::Screen::center_horizontally = true;
-bool Globals::Screen::center_vertically   = true;
-
-bool Globals::Screen::show_borders  = true;
-bool Globals::Screen::fancy_borders = true;
-bool Globals::Screen::outer_border  = true;
-
-unsigned int Globals::Game::starting_level          = 1;
+unsigned int Globals::Game::starting_speed          = 1;
 int          Globals::Game::fruits_at_once          = 1;
 bool         Globals::Game::random_walls            = false;
 bool         Globals::Game::teleport                = false;
+std::string  Globals::Game::current_level           = "";
+
+ColorPair Globals::Theme::player_head;
+ColorPair Globals::Theme::player_head_dead;
+ColorPair Globals::Theme::player_body;
+ColorPair Globals::Theme::fruit;
 
 Globals::Game::BoardSize Globals::Game::board_size  = LARGE;
 
@@ -55,11 +59,12 @@ int Globals::Game::boardSizeToInt(Globals::Game::BoardSize size)
 	return 2;
 }
 
-Score        Globals::Game::highScore;
+int Globals::Game::board_scroll_delay = 1000;
 
-ColorPair Globals::Theme::text;
-ColorPair Globals::Theme::hilite_text;
-ColorPair Globals::Theme::textbox;
+bool Globals::Game::board_scroll_up    = false;
+bool Globals::Game::board_scroll_down  = false;
+bool Globals::Game::board_scroll_left  = false;
+bool Globals::Game::board_scroll_right = false;
 
 bool Globals::Error::has_config_file = true;
 bool Globals::Error::has_score_file  = true;
@@ -72,11 +77,6 @@ bool Globals::Error::strange_score_file     = false;
 
 void Globals::init()
 {
-	// Other default variables
-	Globals::Theme::text        = 0;
-	Globals::Theme::hilite_text = Colors::pair(COLOR_CYAN, COLOR_DEFAULT);
-	Globals::Theme::textbox     = (Globals::Theme::hilite_text | A_REVERSE);
-
 	// Making sure default config directory exists
 	// By default it's `~/.local/share/nsnake/`
 
@@ -84,7 +84,7 @@ void Globals::init()
 	                              ".local/share/" +
 	                              PACKAGE + "/");
 
-	if (Globals::Config::directory.front() != '/')
+	if (Utils::String::front(Globals::Config::directory) != '/')
 	{
 		// We couldn't get user's home directory,
 		// so let's fallback to `/tmp/.local/share...`
@@ -96,7 +96,7 @@ void Globals::init()
 	                         "settings.ini");
 
 	Globals::Config::scoresFile = (Globals::Config::directory +
-	                               "scores.bin");
+	                               "arcade.nsnakescores");
 
 	if (! Utils::File::isDirectory(Globals::Config::directory))
 		Utils::File::mkdir_p(Globals::Config::directory);
@@ -118,8 +118,257 @@ void Globals::init()
 	InputManager::bind("pause", 'p');
 	InputManager::bind("help",  'h');
 	InputManager::bind("quit",  'q');
+
+
+	// Aww yeah, rev up dem colors
+	Globals::Theme::player_head = Colors::pair("green", "default", true);
+	Globals::Theme::player_head_dead = Colors::pair("red", "default", true);
+	Globals::Theme::player_body = Colors::pair("green", "default", true);
+
+	Globals::Theme::fruit = Colors::pair("red", "default", true);
+
+	/// HACK Initializing the default level file directory.
+	///      I know this is hacky, but couldn't find another way to
+	///      initialize it.
+	///
+	BoardParser::directory = Globals::Config::directory + "levels/";
+	ScoreFile::directory   = BoardParser::directory;
+
+	/// Making sure they both exist...!
+	if (! Utils::File::isDirectory(BoardParser::directory))
+		Utils::File::mkdir_p(BoardParser::directory);
 }
-void Globals::exit()
+void Globals::loadFile()
+{
+	// Now, back on track
+	if (! Utils::File::exists(Globals::Config::file))
+		return;
+
+	INI::Parser* ini = NULL;
+
+	try {
+		ini = new INI::Parser(Globals::Config::file);
+	}
+	catch(std::runtime_error& e)
+	{
+		// File doesn't exist (or we couldn't access it)
+		// Either way, ignore it silently
+		SAFE_DELETE(ini);
+		return;
+	}
+
+	// Will be used on this macro below
+	std::string buffer = "";
+
+// Small macro to avoid unnecessary typing.
+//
+// To get something from the ini file we send the
+// text (to identify some value) and the default
+// value in case it doesn't exist.
+//
+// For the last one I send the variable itself,
+// so we fallback to the default values.
+#define INI_GET(var, out, in)                    \
+	{                                            \
+		buffer = (* ini)(out)[in];               \
+		if (! buffer.empty())                    \
+		{                                        \
+			Utils::String::convert(buffer, var); \
+		}                                        \
+	}
+
+	INI_GET(EngineGlobals::Screen::center_horizontally, "screen", "center_horizontal");
+	INI_GET(EngineGlobals::Screen::center_vertically,   "screen", "center_vertical");
+
+	INI_GET(EngineGlobals::Screen::show_borders,  "screen", "borders");
+	INI_GET(EngineGlobals::Screen::fancy_borders, "screen", "fancy_borders");
+	INI_GET(EngineGlobals::Screen::outer_border,  "screen", "outer_border");
+
+	INI_GET(Globals::Game::random_walls,       "game", "random_walls");
+	INI_GET(Globals::Game::fruits_at_once,     "game", "fruits_at_once");
+	INI_GET(Globals::Game::teleport,           "game", "teleport");
+	INI_GET(Globals::Game::board_scroll_delay, "game", "board_scroll_delay");
+
+	INI_GET(Globals::Game::board_scroll_up,    "game", "board_scroll_up");
+	INI_GET(Globals::Game::board_scroll_down,  "game", "board_scroll_down");
+	INI_GET(Globals::Game::board_scroll_left,  "game", "board_scroll_left");
+	INI_GET(Globals::Game::board_scroll_right, "game", "board_scroll_right");
+
+	// unsigned ints are the exception - their overloading
+	// is ambiguous... I should consider removing them altogether
+	buffer = (* ini)("game")["starting_speed"];
+	if (! buffer.empty())
+	{
+		int starting_speed = Globals::Game::starting_speed;
+		Utils::String::convert(buffer, starting_speed);
+		Globals::Game::starting_speed = starting_speed;
+	}
+
+	// Special Cases
+
+	// Getting input keys
+	std::string tmp;
+
+	INI_GET(tmp, "input", "left");
+	InputManager::bind("left", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "right");
+	InputManager::bind("right", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "up");
+	InputManager::bind("up", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "down");
+	InputManager::bind("down", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "pause");
+	InputManager::bind("pause", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "help");
+	InputManager::bind("help", InputManager::stringToKey(tmp));
+
+	INI_GET(tmp, "input", "quit");
+	InputManager::bind("quit", InputManager::stringToKey(tmp));
+
+	// Board Size
+	int board_size = 2;
+	INI_GET(board_size, "game", "board_size");
+	Globals::Game::board_size = Globals::Game::intToBoardSize(board_size);
+
+	// Getting the colors from their strings
+	INI_GET(tmp, "gui_colors", "text");
+	EngineGlobals::Theme::text = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "gui_colors", "hilite_text");
+	EngineGlobals::Theme::hilite_text = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "gui_colors", "textbox");
+	EngineGlobals::Theme::textbox = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "game_colors", "player_head");
+	Globals::Theme::player_head = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "game_colors", "player_head_dead");
+	Globals::Theme::player_head_dead = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "game_colors", "player_body");
+	Globals::Theme::player_body = ColorPair::fromString(tmp);
+
+	INI_GET(tmp, "game_colors", "fruit");
+	Globals::Theme::fruit = ColorPair::fromString(tmp);
+
+	SAFE_DELETE(ini);
+}
+void Globals::saveFile()
+{
+	// Even if the file doesn't exist, we'll create it.
+	INI::Parser* ini;
+
+	try
+	{
+		ini = new INI::Parser(Globals::Config::file);
+	}
+	catch(std::runtime_error& e)
+	{
+		ini = new INI::Parser();
+		ini->create();
+	}
+
+	// Will be used on this macro below
+	std::string buffer;
+
+// Other macro to avoid typing, similar to the one
+// at loadFile()
+#define INI_SET(out, in, var)	               \
+	{                                          \
+		buffer = Utils::String::toString(var); \
+		ini->top().addGroup(out);              \
+		(* ini)(out).addKey(in, buffer);       \
+	}
+
+	INI_SET("screen", "center_horizontal", EngineGlobals::Screen::center_horizontally);
+	INI_SET("screen", "center_vertical",   EngineGlobals::Screen::center_vertically);
+
+	INI_SET("screen", "borders",       EngineGlobals::Screen::show_borders);
+	INI_SET("screen", "fancy_borders", EngineGlobals::Screen::fancy_borders);
+	INI_SET("screen", "outer_border",  EngineGlobals::Screen::outer_border);
+
+	INI_SET("game", "random_walls",     Globals::Game::random_walls);
+	INI_SET("game", "fruits_at_once",   Globals::Game::fruits_at_once);
+	INI_SET("game", "teleport",         Globals::Game::teleport);
+
+	INI_SET("game", "board_scroll_delay", Globals::Game::board_scroll_delay);
+
+	INI_SET("game", "board_scroll_up",    Globals::Game::board_scroll_up);
+	INI_SET("game", "board_scroll_down",  Globals::Game::board_scroll_down);
+	INI_SET("game", "board_scroll_left",  Globals::Game::board_scroll_left);
+	INI_SET("game", "board_scroll_right", Globals::Game::board_scroll_right);
+
+	// unsigned ints are the exception - their overloading
+	// is ambiguous... I should consider removing them altogether
+	int starting_speed = Globals::Game::starting_speed;
+	buffer = Utils::String::toString(starting_speed);
+	ini->top().addGroup("game");
+	(* ini)("game").addKey("starting_speed", buffer);
+
+	// Special Cases
+
+	// Input Keys
+	std::string key;
+
+	key = InputManager::keyToString(InputManager::getBind("left"));
+	INI_SET("input", "left", key);
+
+	key = InputManager::keyToString(InputManager::getBind("right"));
+	INI_SET("input", "right", key);
+
+	key = InputManager::keyToString(InputManager::getBind("up"));
+	INI_SET("input", "up", key);
+
+	key = InputManager::keyToString(InputManager::getBind("down"));
+	INI_SET("input", "down", key);
+
+	key = InputManager::keyToString(InputManager::getBind("pause"));
+	INI_SET("input", "pause", key);
+
+	key = InputManager::keyToString(InputManager::getBind("help"));
+	INI_SET("input", "help", key);
+
+	key = InputManager::keyToString(InputManager::getBind("quit"));
+	INI_SET("input", "quit", key);
+
+	// Board size
+	int board_size = Globals::Game::boardSizeToInt(Globals::Game::board_size);
+	INI_SET("game", "board_size", board_size);
+
+	// Saving the colors from their strings
+	INI_SET("gui_colors", "text", EngineGlobals::Theme::text.toString());
+
+	INI_SET("gui_colors", "hilite_text", EngineGlobals::Theme::hilite_text.toString());
+
+	INI_SET("gui_colors", "textbox", EngineGlobals::Theme::textbox.toString());
+
+
+	INI_SET("game_colors", "player_head", Globals::Theme::player_head.toString());
+
+	INI_SET("game_colors", "player_head_dead", Globals::Theme::player_head_dead.toString());
+
+	INI_SET("game_colors", "player_body", Globals::Theme::player_body.toString());
+
+	INI_SET("game_colors", "fruit", Globals::Theme::fruit.toString());
+
+	try
+	{
+		ini->saveAs(Globals::Config::file);
+	}
+	catch(std::runtime_error& e)
+	{
+		// Couldn't save the file...
+		// ... do nothing
+	}
+	SAFE_DELETE(ini);
+}
+void Globals::warnErrors()
 {
 	if (! Globals::Error::has_config_file)
 	{
@@ -139,7 +388,7 @@ void Globals::exit()
 	{
 		std::cout << "Warning: Your high score file is from an old nsnake version."
 		          << std::endl;
-	}
+ 	}
 	if (Globals::Error::strange_score_file)
 	{
 		// Erasing high scores...
@@ -149,129 +398,5 @@ void Globals::exit()
 		          << "       We're sorry, but we had to erase it"
 		          << std::endl;
 	}
-}
-void Globals::loadFile()
-{
-	if (! Utils::File::exists(Globals::Config::file))
-		return;
-
-	INI ini;
-	if (! ini.load(Globals::Config::file))
-		return;
-
-// Small macro to avoid unnecessary typing.
-//
-// To get something from the ini file we send the
-// text (to identify some value) and the default
-// value in case it doesn't exist.
-//
-// For the last one I send the variable itself,
-// so we fallback to the default values.
-#define INI_GET(var, text) \
-	{ \
-		var = ini.get(text, var); \
-	}
-
-	INI_GET(Globals::Screen::center_horizontally, "screen:center_horizontal");
-	INI_GET(Globals::Screen::center_vertically,   "screen:center_vertical");
-
-	INI_GET(Globals::Screen::show_borders,  "screen:borders");
-	INI_GET(Globals::Screen::fancy_borders, "screen:fancy_borders");
-	INI_GET(Globals::Screen::outer_border,  "screen:outer_border");
-
-	INI_GET(Globals::Game::starting_level, "game:starting_level");
-	INI_GET(Globals::Game::random_walls,   "game:random_walls");
-	INI_GET(Globals::Game::fruits_at_once, "game:fruits_at_once");
-	INI_GET(Globals::Game::teleport,       "game:teleport");
-
-	// Special Cases
-
-	// Getting input keys
-	std::string tmp;
-
-	INI_GET(tmp, "input:left");
-	InputManager::bind("left", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:right");
-	InputManager::bind("right", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:up");
-	InputManager::bind("up", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:down");
-	InputManager::bind("down", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:pause");
-	InputManager::bind("pause", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:help");
-	InputManager::bind("help", InputManager::stringToKey(tmp));
-
-	INI_GET(tmp, "input:quit");
-	InputManager::bind("quit", InputManager::stringToKey(tmp));
-
-	// Board Size
-	int board_size = 2;
-	INI_GET(board_size, "game:board_size");
-	Globals::Game::board_size = Globals::Game::intToBoardSize(board_size);
-}
-void Globals::saveFile()
-{
-	// Even if the file doesn't exist, we'll create it.
-	INI ini;
-	if (! ini.load(Globals::Config::file))
-		ini.create();
-
-// Other macro to avoid typing, similar to the one
-// at loadFile()
-#define INI_SET(text, var) \
-	{ \
-		ini.set(text, Utils::String::toString(var)); \
-	}
-
-
-	INI_SET("screen:center_horizontal", Globals::Screen::center_horizontally);
-	INI_SET("screen:center_vertical",   Globals::Screen::center_vertically);
-
-	INI_SET("screen:borders",       Globals::Screen::show_borders);
-	INI_SET("screen:fancy_borders", Globals::Screen::fancy_borders);
-	INI_SET("screen:outer_border",  Globals::Screen::outer_border);
-
-	INI_SET("game:starting_level",   Globals::Game::starting_level);
-	INI_SET("game:random_walls",     Globals::Game::random_walls);
-	INI_SET("game:fruits_at_once",   Globals::Game::fruits_at_once);
-	INI_SET("game:teleport",         Globals::Game::teleport);
-
-	// Special Cases
-
-	// Input Keys
-	std::string key;
-
-	key = InputManager::keyToString(InputManager::getBind("left"));
-	INI_SET("input:left", key);
-
-	key = InputManager::keyToString(InputManager::getBind("right"));
-	INI_SET("input:right", key);
-
-	key = InputManager::keyToString(InputManager::getBind("up"));
-	INI_SET("input:up", key);
-
-	key = InputManager::keyToString(InputManager::getBind("down"));
-	INI_SET("input:down", key);
-
-	key = InputManager::keyToString(InputManager::getBind("pause"));
-	INI_SET("input:pause", key);
-
-	key = InputManager::keyToString(InputManager::getBind("help"));
-	INI_SET("input:help", key);
-
-	key = InputManager::keyToString(InputManager::getBind("quit"));
-	INI_SET("input:quit", key);
-
-	// Board size
-	int board_size = Globals::Game::boardSizeToInt(Globals::Game::board_size);
-	INI_SET("game:board_size", board_size);
-
-	ini.save(Globals::Config::file);
 }
 

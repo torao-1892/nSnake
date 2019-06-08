@@ -1,45 +1,69 @@
 #ifndef GLOBALS_H_DEFINED
 #define GLOBALS_H_DEFINED
 
-#include <Interface/Colors.hpp>
-#include <Game/Score.hpp>
+#include <Engine/Graphics/Colors.hpp>
 
 #include <string>
 
-/// All global settings to the game.
+// Avoiding cyclic #includes
+struct ScoreEntry;
+
+/// Container for global settings on the game.
+///
+/// It holds all global variables, properly initializing
+/// their default values.
+///
+/// ---
+///
+/// Global variables are spread across inner namespaces.
+///
+/// ## Usage
+///
+/// Make sure to follow this order:
+///
+///     Globals::init();
+///     Globals::loadFile();
+///     // Run your game...
+///     Globals::saveFile();
+///     Globals::exit();
 ///
 namespace Globals
 {
-	/// Allocates necessary variables.
-	///
-	/// @note No need for Globals::exit() because the
-	///       Operational System always frees the memory
-	///       when quitting the program.
-	///       And definitely this module will need to
-	///       be accessed until the end of the program.
-	///
+	/// Initializes global variables with default values.
 	void init();
+
+	/// Loads global variables from the default file.
+	/// Check `Globals::Config::file` for its filename.
+	///
+	void loadFile();
+
+	/// Loads global variables to the default file.
+	/// Check `Globals::Config::file` for its filename.
+	///
+	void saveFile();
 
 	/// Warns the user about any errors and warnings found
 	/// during the program's execution.
 	///
 	/// @note You must call this _after_ finishing up nCurses,
 	///       otherwise things will get messed up on the terminal.
-	void exit();
-
-	/// Loads configuration from the default file name.
-	void loadFile();
-
-	/// Saves current configurations to the default file name.
-	void saveFile();
+	void warnErrors();
 
 	// Accessing version numbers - version[MAJOR] for example
 #define MAJOR 0
 #define MINOR 1
 #define PATCH 2
 
-	/// Game version (format MMP - Major Minor Patch)
-	extern int version[3];
+	/// Game version (format MMP - Major Minor Patch).
+	///
+	/// On the Makefile we define a constant VERSION which is
+	/// a string like "2.0.8".
+	/// It contains the current game version on MAJOR.MINOR.PATCH
+	/// format.
+	///
+	/// This variable contains the same info, but without the
+	/// dots.
+	extern char version[3];
 
 	namespace Config
 	{
@@ -61,19 +85,9 @@ namespace Globals
 		extern std::string scoresFile;
 	};
 
-	namespace Screen
-	{
-		extern bool center_horizontally;
-		extern bool center_vertically;
-
-		extern bool show_borders;
-		extern bool fancy_borders;
-		extern bool outer_border;
-	};
-
 	namespace Game
 	{
-		extern unsigned int starting_level;
+		extern unsigned int starting_speed;
 
 		extern int fruits_at_once;
 		extern bool random_walls;
@@ -89,25 +103,24 @@ namespace Globals
 
 		extern BoardSize board_size;
 
-		/// Maximum high score obtained for the current game.
-		///
-		/// There's different high scores for different
-		/// game settings.
-		///
-		/// Each time the user runs the game with a different
-		/// configuration of the tweaks above, a new high
-		/// score is generated.
-		///
-		/// It always starts with 0 and if the player
-		/// surpasses it, will be the new maximum.
-		extern Score highScore;
+		extern int board_scroll_delay;
+
+		extern bool board_scroll_up;
+		extern bool board_scroll_down;
+		extern bool board_scroll_left;
+		extern bool board_scroll_right;
+
+		/// Name of the level the game should load.
+		/// Also, name of the current level.
+		extern std::string current_level;
 	};
 
 	namespace Theme
 	{
-		extern ColorPair text;
-		extern ColorPair hilite_text;
-		extern ColorPair textbox;
+		extern ColorPair player_head;
+		extern ColorPair player_head_dead;
+		extern ColorPair player_body;
+		extern ColorPair fruit;
 	};
 
 	// Flags to warn the user of some error at the end
